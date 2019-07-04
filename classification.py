@@ -1,23 +1,26 @@
-from tqdm import tqdm
-from datetime import datetime
-from collections import defaultdict
-from sklearn.feature_extraction import DictVectorizer
 import xml.etree.ElementTree as ET
 import os
 import sys
 import pickle
-import random
+import csv
+from tqdm import tqdm
+from datetime import datetime
+from collections import defaultdict
+from sklearn.feature_extraction import DictVectorizer
+from sklearn.metrics import classification_report, balanced_accuracy_score
+from sklearn.model_selection import train_test_split
+
+TRAIN_DIR = "./train_annotations_instance"
+TEST_DIR = "./test_annotations_instance"
+LABELS_FILE = "./train.csv"
 
 
-ANNOTATIONS_DIR = "./train_annotations_instance"
-
-
-def get_vocabulary():
-    files = os.listdir(ANNOTATIONS_DIR)
+def get_vocabulary(annotations_dir=TRAIN_DIR):
+    files = os.listdir(annotations_dir)
     print("Getting vocabulary words")
     features = set()
     for file in tqdm(files):
-        file = os.path.join(ANNOTATIONS_DIR, file)
+        file = os.path.join(annotations_dir, file)
         root = ET.parse(file).getroot()
         for type_tag in root.findall('object'):
             value = type_tag.find('name')
@@ -25,11 +28,21 @@ def get_vocabulary():
     return list(features)
 
 
-def parse_dataset(vectorizer=None):
+def parse_annotated_labels():
+    annotated_labels = dict()
+    print("Getting labels from annotations")
+    with open(LABELS_FILE) as csvDataFile:
+        csvReader = csv.reader(csvDataFile)
+        for row in tqdm(csvReader):
+            annotated_labels[row[1]] = row[2]
+    return annotated_labels
+
+
+def parse_dataset(annotations_dir=TRAIN_DIR, vectorizer=None):
     mode = 'test'
     if vectorizer is None:
         mode = 'train'
-    files = os.listdir(ANNOTATIONS_DIR)
+    files = os.listdir(annotations_dir)
     # vocabulary = get_vocabulary()
     print("Making training matrix")
     featurized_imgs = []
@@ -37,16 +50,19 @@ def parse_dataset(vectorizer=None):
     labels = []
     if mode == 'train':
         vectorizer = DictVectorizer(sparse=False)
+        annotated_labels = parse_annotated_labels()
     for file in tqdm(files):
-        file = os.path.join(ANNOTATIONS_DIR, file)
+        file_id = file.split(".")[0]
+        file = os.path.join(annotations_dir, file)
         root = ET.parse(file).getroot()
         featurized_img = defaultdict(int)
         for type_tag in root.findall('object'):
             value = type_tag.find('name')
             featurized_img[value.text.strip()] += 1
-        class_img = random.randint(0, 10)  # WARNING: DO THIS before training
         featurized_imgs.append(featurized_img)
-        labels.append(class_img)
+        if mode == 'train':
+            class_img = annotated_labels[file_id]
+            labels.append(class_img)
     if mode == 'train':
         matrix = vectorizer.fit_transform(featurized_imgs)
     else:
@@ -76,7 +92,21 @@ def train(feature_matrix, labels, model_type='svm', save=True):
     return clf
 
 
-def test(feature_matrix, labels, clf):
+def eval(feature_matrix, labels, model_type='svm', save=True):
+    clf = make_model(model_type)
+    if not clf:
+        raise Exception("No clf setted")
+    print('Model evaluation')
+    train_m, test_m, train_labels, test_labels = train_test_split(
+        feature_matrix, labels, test_size=0.33, random_state=42)
+    clf.fit(train_m, train_labels)
+    pred_labels = clf.predict(test_m)
+    print(classification_report(test_labels, pred_labels))
+    print(balanced_accuracy_score(test_labels, pred_labels))
+    return clf
+
+
+def test(feature_matrix, clf):
     labels = clf.predict(feature_matrix)
     return labels
 
@@ -96,10 +126,16 @@ if __name__ == '__main__':
         filename = "vec-{}-{}.pickle".format(clf.__class__.__name__, _now)
         pickle.dump(vectorizer, open(filename, 'wb'))
         print("Model and vectorizer saved ok")
+    if sys.argv[1] == 'eval':
+        print("EVAL")
+        feature_matrix, labels, vectorizer = parse_dataset()
+        print("Vectorizer ok")
+        clf = eval(feature_matrix, labels)
+        print("Model evaluated")
     if sys.argv[1] == 'test':
         print("TEST")
         loaded_model = pickle.load(open(sys.argv[2], 'rb'))
         vectorizer = pickle.load(open(sys.argv[3], 'rb'))
-        feature_matrix, labels, vectorizer = parse_dataset(vectorizer)
-        labels = test(loaded_model)
+        f_matrix, labels, vectorizer = parse_dataset(TEST_DIR, vectorizer)
+        labels = test(f_matrix, loaded_model)
         print(labels)
