@@ -9,6 +9,12 @@ from collections import defaultdict
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.metrics import classification_report, balanced_accuracy_score
 from sklearn.model_selection import train_test_split
+from sklearn import svm
+from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import GaussianNB
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import VotingClassifier
+
 
 TRAIN_DIR = "./train_annotations_instance"
 TEST_DIR = "./test_annotations_instance"
@@ -70,20 +76,29 @@ def parse_dataset(annotations_dir=TRAIN_DIR, vectorizer=None):
     return matrix, labels, vectorizer
 
 
-def make_model(model_type):
+def make_model(model_type=None):
+    clf1 = LogisticRegression(solver='lbfgs',
+                              multi_class='multinomial',
+                              random_state=1,
+                              max_iter=400)
+    clf2 = RandomForestClassifier(n_estimators=50, random_state=1)
+    clf3 = GaussianNB()
+    clf4 = svm.SVC(gamma='scale', probability=True)
+    estimators = [('lr', clf1), ('rf', clf2), ('gnb', clf3), ('svm', clf4)]
+    eclf = VotingClassifier(estimators=estimators, voting='soft',
+                            weights=[1, 1, 1, 1], flatten_transform=True)
+    if model_type == 'lr':
+        return clf1
+    if model_type == 'rf':
+        return clf2
+    if model_type == 'gnb':
+        return clf3
     if model_type == 'svm':
-        from sklearn import svm
-        clf = svm.SVC(gamma='scale')
-    elif model_type == 'rf':
-        from sklearn.ensemble import RandomForestClassifier
-        clf = RandomForestClassifier(n_estimators=100, max_depth=2,
-                                     random_state=0)
-    else:
-        return None
-    return clf
+        return clf4
+    return eclf
 
 
-def train(feature_matrix, labels, model_type='svm', save=True):
+def train(feature_matrix, labels, model_type=None, save=True):
     clf = make_model(model_type)
     if not clf:
         raise Exception("No clf setted")
@@ -92,8 +107,9 @@ def train(feature_matrix, labels, model_type='svm', save=True):
     return clf
 
 
-def eval(feature_matrix, labels, model_type='svm', save=True):
+def eval(feature_matrix, labels, model_type=None, save=True):
     clf = make_model(model_type)
+    print(clf.__class__.__name__)
     if not clf:
         raise Exception("No clf setted")
     print('Model evaluation')
