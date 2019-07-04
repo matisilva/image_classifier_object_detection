@@ -1,0 +1,4 @@
+train_annotations*
+*.pickle
+.env
+.DS_Store
