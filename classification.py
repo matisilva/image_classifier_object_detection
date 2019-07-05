@@ -3,6 +3,7 @@ import os
 import sys
 import pickle
 import csv
+import json
 from tqdm import tqdm
 from datetime import datetime
 from collections import defaultdict
@@ -17,7 +18,9 @@ from sklearn.ensemble import VotingClassifier
 
 
 TRAIN_DIR = "./train_annotations_instance"
+TRAIN_DIR_JSON = "./train_annotations_json"
 TEST_DIR = "./test_annotations_instance"
+LABELS_FILE = "./train.csv"
 LABELS_FILE = "./train.csv"
 
 
@@ -76,11 +79,43 @@ def parse_dataset(annotations_dir=TRAIN_DIR, vectorizer=None):
     return matrix, labels, vectorizer
 
 
+def parse_dataset_json(annotations_dir=TRAIN_DIR_JSON, vectorizer=None):
+    mode = 'test'
+    if vectorizer is None:
+        mode = 'train'
+    categories = os.listdir(annotations_dir)
+    # vocabulary = get_vocabulary()
+    print("Making training matrix")
+    featurized_imgs = []
+    matrix = []
+    labels = []
+    if mode == 'train':
+        vectorizer = DictVectorizer(sparse=False)
+        annotated_labels = parse_annotated_labels()
+    for category in tqdm(categories):
+        with open(os.path.join(annotations_dir, category)) as f:
+            annotations = json.load(f)
+        print(category, len(annotations.keys()))
+        for file_id in annotations.keys():
+            featurized_img = defaultdict(int)
+            for tag in annotations[file_id]:
+                featurized_img[tag[1]] += 1
+                featurized_imgs.append(featurized_img)
+                if mode == 'train':
+                    class_img = annotated_labels[file_id.split(".jpg")[0]]
+                    labels.append(class_img)
+    if mode == 'train':
+        matrix = vectorizer.fit_transform(featurized_imgs)
+    else:
+        matrix = vectorizer.transform(featurized_imgs)
+    return matrix, labels, vectorizer
+
+
 def make_model(model_type=None):
     clf1 = LogisticRegression(solver='lbfgs',
                               multi_class='multinomial',
                               random_state=1,
-                              max_iter=400)
+                              max_iter=700)
     clf2 = RandomForestClassifier(n_estimators=50, random_state=1)
     clf3 = GaussianNB()
     clf4 = svm.SVC(gamma='scale', probability=True)
@@ -144,7 +179,7 @@ if __name__ == '__main__':
         print("Model and vectorizer saved ok")
     if sys.argv[1] == 'eval':
         print("EVAL")
-        feature_matrix, labels, vectorizer = parse_dataset()
+        feature_matrix, labels, vectorizer = parse_dataset_json()
         print("Vectorizer ok")
         clf = eval(feature_matrix, labels)
         print("Model evaluated")
