@@ -1,9 +1,9 @@
-import xml.etree.ElementTree as ET
 import os
 import sys
 import pickle
 import csv
 import json
+import numpy as np
 from tqdm import tqdm
 from datetime import datetime
 from collections import defaultdict
@@ -15,26 +15,44 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.naive_bayes import GaussianNB
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.ensemble import VotingClassifier
+from sklearn.model_selection import GridSearchCV
 
 
-TRAIN_DIR = "./train_annotations_instance"
-TRAIN_DIR_JSON = "./train_annotations_json"
-TEST_DIR = "./test_annotations_instance"
+TRAIN_DIR = "./train_annotations_json_2"
+TEST_DIR = "./test_annotations_json"
 LABELS_FILE = "./train.csv"
-LABELS_FILE = "./train.csv"
 
 
-def get_vocabulary(annotations_dir=TRAIN_DIR):
-    files = os.listdir(annotations_dir)
-    print("Getting vocabulary words")
-    features = set()
-    for file in tqdm(files):
-        file = os.path.join(annotations_dir, file)
-        root = ET.parse(file).getroot()
-        for type_tag in root.findall('object'):
-            value = type_tag.find('name')
-            features.add(value.text.strip())
-    return list(features)
+class OwnVotingClassifier(VotingClassifier):
+    def __init__(self, estimators, voting='hard', weights=None, n_jobs=None,
+                 flatten_transform=True):
+        self.estimators = estimators
+        self.voting = voting
+        self.weights = weights
+        self.n_jobs = n_jobs
+        self.flatten_transform = flatten_transform
+
+    # def _collect_probas(self, X):
+    #     _probs = np.asarray([clf.predict_proba(X) for clf in self.estimators_])
+    #     for vote in self.external_votes:
+    #         np.append(_probs, vote)
+    #     return _probs
+
+    def _predict_proba(self, X):
+        if self.voting == 'hard':
+            raise AttributeError("predict_proba is not available when"
+                                 " voting=%r" % self.voting)
+        return np.average(self._collect_probas(X), axis=0,
+                          weights=self._weights_not_none)
+        # tunned_results = []
+        # for index, x in enumerate(X):
+        #     result = np.asarray(self.external_votes[index])[0]
+        #     if np.any(x):
+        #         result = np.average(self._collect_probas([x]), axis=0,
+        #                             weights=self._weights_not_none)[0]
+        #     tunned_results.append(result)
+        # print(np.asarray(tunned_results).shape)
+        # return np.asarray(tunned_results)
 
 
 def parse_annotated_labels():
@@ -47,68 +65,38 @@ def parse_annotated_labels():
     return annotated_labels
 
 
-def parse_dataset(annotations_dir=TRAIN_DIR, vectorizer=None):
-    mode = 'test'
-    if vectorizer is None:
-        mode = 'train'
-    files = os.listdir(annotations_dir)
-    # vocabulary = get_vocabulary()
-    print("Making training matrix")
-    featurized_imgs = []
-    matrix = []
-    labels = []
-    if mode == 'train':
-        vectorizer = DictVectorizer(sparse=False)
-        annotated_labels = parse_annotated_labels()
-    for file in tqdm(files):
-        file_id = file.split(".")[0]
-        file = os.path.join(annotations_dir, file)
-        root = ET.parse(file).getroot()
-        featurized_img = defaultdict(int)
-        for type_tag in root.findall('object'):
-            value = type_tag.find('name')
-            featurized_img[value.text.strip()] += 1
-        featurized_imgs.append(featurized_img)
-        if mode == 'train':
-            class_img = annotated_labels[file_id]
-            labels.append(class_img)
-    if mode == 'train':
-        matrix = vectorizer.fit_transform(featurized_imgs)
-    else:
-        matrix = vectorizer.transform(featurized_imgs)
-    return matrix, labels, vectorizer
-
-
-def parse_dataset_json(annotations_dir=TRAIN_DIR_JSON, vectorizer=None):
+def parse_dataset_json(annotations_dir=TRAIN_DIR, vectorizer=None):
     mode = 'test'
     if vectorizer is None:
         mode = 'train'
     categories = os.listdir(annotations_dir)
-    # vocabulary = get_vocabulary()
     print("Making training matrix")
     featurized_imgs = []
     matrix = []
     labels = []
+    external_votes = []
     if mode == 'train':
         vectorizer = DictVectorizer(sparse=False)
         annotated_labels = parse_annotated_labels()
     for category in tqdm(categories):
-        with open(os.path.join(annotations_dir, category)) as f:
-            annotations = json.load(f)
-        print(category, len(annotations.keys()))
-        for file_id in annotations.keys():
+        if category.startswith("."):
+            continue
+        for file_id in os.listdir(os.path.join(annotations_dir, category))[:100]:
             featurized_img = defaultdict(int)
-            for tag in annotations[file_id]:
+            with open(os.path.join(annotations_dir, category, file_id)) as f:
+                annotations = json.load(f)
+            for tag in annotations['detections']:
                 featurized_img[tag[1]] += 1
-                featurized_imgs.append(featurized_img)
-                if mode == 'train':
-                    class_img = annotated_labels[file_id.split(".jpg")[0]]
-                    labels.append(class_img)
+            featurized_imgs.append(featurized_img)
+            external_votes.append(annotations['prob_vector'])
+            if mode == 'train':
+                class_img = annotated_labels[file_id.split(".jpg")[0]]
+                labels.append(class_img)
     if mode == 'train':
         matrix = vectorizer.fit_transform(featurized_imgs)
     else:
         matrix = vectorizer.transform(featurized_imgs)
-    return matrix, labels, vectorizer
+    return matrix, labels, vectorizer, external_votes
 
 
 def make_model(model_type=None):
@@ -119,9 +107,21 @@ def make_model(model_type=None):
     clf2 = RandomForestClassifier(n_estimators=50, random_state=1)
     clf3 = GaussianNB()
     clf4 = svm.SVC(gamma='scale', probability=True)
-    estimators = [('lr', clf1), ('rf', clf2), ('gnb', clf3), ('svm', clf4)]
-    eclf = VotingClassifier(estimators=estimators, voting='soft',
-                            weights=[1, 1, 1, 1], flatten_transform=True)
+    # estimators = [('lr', clf1), ('rf', clf2), ('gnb', clf3), ('svm', clf4)]
+    estimators = [('rf', clf2), ('svm', clf4)]
+
+    # Use the key for the classifier followed by __ and the attribute
+    params = {'rf__n_estimators': [50, 100, 500],
+              'svm__C': [0.1, 0.5, 0.8, 1, 3, 4],
+              'svm__kernel': ['rbf', 'poly', 'linear'],
+              'svm__gamma': [0.66, 0.77, 0.88, 0.99, 1.5],
+              'svm__class_weight': ['balanced', None]}
+
+    eclf = OwnVotingClassifier(estimators=estimators, voting='soft',
+                               flatten_transform=True)
+    if model_type == 'grid':
+        return GridSearchCV(estimator=eclf, param_grid=params, cv=2)
+
     if model_type == 'lr':
         return clf1
     if model_type == 'rf':
@@ -142,18 +142,24 @@ def train(feature_matrix, labels, model_type=None, save=True):
     return clf
 
 
-def eval(feature_matrix, labels, model_type=None, save=True):
+def eval(feature_matrix, labels, model_type=None, save=True,
+         external_votes=None):
     clf = make_model(model_type)
     print(clf.__class__.__name__)
     if not clf:
         raise Exception("No clf setted")
     print('Model evaluation')
-    train_m, test_m, train_labels, test_labels = train_test_split(
-        feature_matrix, labels, test_size=0.33, random_state=42)
-    clf.fit(train_m, train_labels)
-    pred_labels = clf.predict(test_m)
-    print(classification_report(test_labels, pred_labels))
-    print(balanced_accuracy_score(test_labels, pred_labels))
+    ext_votes = external_votes
+    tr_m, te_m, tr_labels, te_labels, tr_ext_v, te_ext_v = train_test_split(
+        feature_matrix, labels, ext_votes, test_size=0.33, random_state=42)
+    clf.external_votes = tr_ext_v  #  This only works if is OwnVotingClassifier
+    clf.fit(tr_m, tr_labels)
+    if model_type == 'grid':
+        print(clf.best_params_)
+    clf.external_votes = te_ext_v  #  This only works if is OwnVotingClassifier
+    pred_labels = clf.predict(te_m)
+    print(classification_report(te_labels, pred_labels))
+    print(balanced_accuracy_score(te_labels, pred_labels))
     return clf
 
 
@@ -167,7 +173,7 @@ if __name__ == '__main__':
         print("BAD ARGS")
     if sys.argv[1] == 'train':
         print("TRAIN")
-        feature_matrix, labels, vectorizer = parse_dataset()
+        feature_matrix, labels, vectorizer = parse_dataset_json()
         print("Vectorizer ok")
         clf = train(feature_matrix, labels)
         print("Model ok")
@@ -179,14 +185,15 @@ if __name__ == '__main__':
         print("Model and vectorizer saved ok")
     if sys.argv[1] == 'eval':
         print("EVAL")
-        feature_matrix, labels, vectorizer = parse_dataset_json()
+        feature_matrix, labels, vectorizer, ext_votes = parse_dataset_json()
         print("Vectorizer ok")
-        clf = eval(feature_matrix, labels)
+        clf = eval(feature_matrix, labels, model_type='grid',
+                   external_votes=ext_votes)
         print("Model evaluated")
     if sys.argv[1] == 'test':
         print("TEST")
         loaded_model = pickle.load(open(sys.argv[2], 'rb'))
         vectorizer = pickle.load(open(sys.argv[3], 'rb'))
-        f_matrix, labels, vectorizer = parse_dataset(TEST_DIR, vectorizer)
+        f_matrix, labels, vectorizer = parse_dataset_json(TEST_DIR, vectorizer)
         labels = test(f_matrix, loaded_model)
         print(labels)
