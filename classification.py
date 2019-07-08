@@ -81,12 +81,14 @@ def parse_dataset_json(annotations_dir=TRAIN_DIR, vectorizer=None):
     for category in tqdm(categories):
         if category.startswith("."):
             continue
-        for file_id in os.listdir(os.path.join(annotations_dir, category))[:100]:
+        for file_id in os.listdir(os.path.join(annotations_dir, category)):
             featurized_img = defaultdict(int)
             with open(os.path.join(annotations_dir, category, file_id)) as f:
                 annotations = json.load(f)
             for tag in annotations['detections']:
-                featurized_img[tag[1]] += 1
+                featurized_img[tag[1]] += tag[2]
+            for index, tag in enumerate(annotations['prob_vector'][0]):
+                featurized_img[str(index)] += tag
             featurized_imgs.append(featurized_img)
             external_votes.append(annotations['prob_vector'])
             if mode == 'train':
@@ -96,6 +98,7 @@ def parse_dataset_json(annotations_dir=TRAIN_DIR, vectorizer=None):
         matrix = vectorizer.fit_transform(featurized_imgs)
     else:
         matrix = vectorizer.transform(featurized_imgs)
+    print(matrix.shape)
     return matrix, labels, vectorizer, external_votes
 
 
@@ -187,7 +190,8 @@ if __name__ == '__main__':
         print("EVAL")
         feature_matrix, labels, vectorizer, ext_votes = parse_dataset_json()
         print("Vectorizer ok")
-        clf = eval(feature_matrix, labels, model_type='grid',
+        clf = eval(feature_matrix, labels,
+                   model_type='grid',
                    external_votes=ext_votes)
         print("Model evaluated")
     if sys.argv[1] == 'test':
