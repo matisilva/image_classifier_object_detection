@@ -18,7 +18,8 @@ from sklearn.ensemble import VotingClassifier
 from sklearn.model_selection import GridSearchCV
 
 
-TRAIN_DIR = "./train_annotations_json_2"
+TRAIN_DIR = "./train_annotations_json"
+#TRAIN_DIR = "./sample_annotations_json"
 TEST_DIR = "./test_annotations_json"
 LABELS_FILE = "./train.csv"
 
@@ -94,6 +95,8 @@ def parse_dataset_json(annotations_dir=TRAIN_DIR, vectorizer=None):
             if mode == 'train':
                 class_img = annotated_labels[file_id.split(".jpg")[0]]
                 labels.append(class_img)
+            else:
+                labels.append(file_id)
     if mode == 'train':
         matrix = vectorizer.fit_transform(featurized_imgs)
     else:
@@ -107,10 +110,10 @@ def make_model(model_type=None):
                               multi_class='multinomial',
                               random_state=1,
                               max_iter=700)
-    clf2 = RandomForestClassifier(n_estimators=50, random_state=1)
+    clf2 = RandomForestClassifier(n_estimators=100, random_state=1)
     clf3 = GaussianNB()
-    clf4 = svm.SVC(gamma='scale', probability=True)
-    # estimators = [('lr', clf1), ('rf', clf2), ('gnb', clf3), ('svm', clf4)]
+    clf4 = svm.SVC(gamma=1.5, kernel='linear', class_weight=None, C=1, probability=True)
+    #estimators = [('lr', clf1), ('rf', clf2), ('gnb', clf3), ('svm', clf4)]
     estimators = [('rf', clf2), ('svm', clf4)]
 
     # Use the key for the classifier followed by __ and the attribute
@@ -123,7 +126,7 @@ def make_model(model_type=None):
     eclf = OwnVotingClassifier(estimators=estimators, voting='soft',
                                flatten_transform=True)
     if model_type == 'grid':
-        return GridSearchCV(estimator=eclf, param_grid=params, cv=2)
+        return GridSearchCV(estimator=eclf, param_grid=params, cv=2, verbose=10)
 
     if model_type == 'lr':
         return clf1
@@ -176,7 +179,7 @@ if __name__ == '__main__':
         print("BAD ARGS")
     if sys.argv[1] == 'train':
         print("TRAIN")
-        feature_matrix, labels, vectorizer = parse_dataset_json()
+        feature_matrix, labels, vectorizer, _ = parse_dataset_json()
         print("Vectorizer ok")
         clf = train(feature_matrix, labels)
         print("Model ok")
@@ -191,13 +194,16 @@ if __name__ == '__main__':
         feature_matrix, labels, vectorizer, ext_votes = parse_dataset_json()
         print("Vectorizer ok")
         clf = eval(feature_matrix, labels,
-                   model_type='grid',
+                   #model_type='grid',
                    external_votes=ext_votes)
         print("Model evaluated")
     if sys.argv[1] == 'test':
         print("TEST")
         loaded_model = pickle.load(open(sys.argv[2], 'rb'))
         vectorizer = pickle.load(open(sys.argv[3], 'rb'))
-        f_matrix, labels, vectorizer = parse_dataset_json(TEST_DIR, vectorizer)
+        f_matrix, files, vectorizer, _ = parse_dataset_json(TEST_DIR, vectorizer)
         labels = test(f_matrix, loaded_model)
-        print(labels)
+        _now = str(datetime.now())
+        filename = "labels-{}-{}.pickle".format(loaded_model.__class__.__name__, _now)
+        pickle.dump((labels, files), open(filename, 'wb'))
+        print('done')
